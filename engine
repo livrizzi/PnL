@@ -1,0 +1,111 @@
+import os
+import pandas as pd
+import numpy as np
+import time
+from datetime import datetime
+
+class df_final:
+    def __init__(self, source, dataframe):
+        self.source = source
+        self.dataframe = dataframe
+
+def save_data_excel(list_df_final, Ref_Date, output_folder):    
+    output_excel_address = output_folder + '//PnL ' + Ref_Date.replace('/','-') +'.xlsx'
+    writer = pd.ExcelWriter(output_excel_address, engine='xlsxwriter') 
+    money_fmt = writer.book.add_format({'num_format': '#,##0', 'center_across':True}) #not posted yet
+    first_row_fmt = writer.book.add_format({'bg_color': '#00AEEF', 'font_color': '#FFFFFF','bottom':1, 'top':1, 'left':1, 'right':1})
+    border_fmt = writer.book.add_format({'bottom':1, 'top':1, 'left':1, 'right':1}) #put borders around the cell (1 for thin ones)
+    
+    # Position the dataframes in the worksheet.
+    for df_final in list_df_final:
+        df_final.dataframe.to_excel(writer, sheet_name=df_final.source) #Default position, cell A1.
+   
+        worksheet = writer.sheets[df_final.source] #enables to do some formatting in this work sheet
+        worksheet.set_column('A:A', 15) #adjust width of currency column
+        
+        for idx, col in enumerate(df_final.dataframe):  # loop through all columns (idx is number of column starting at 0, col is the name i.e. date), to adjust column width
+            worksheet.set_column(idx+1, idx+1, 28, money_fmt)  #set column width, need +1 as 0 is the currency column (not captured in the enumerate but real when assigning column width)
+            
+        #For cell A1 (0,0) until (last row, last col): put borders around cell IF not empty which is always true. https://xlsxwriter.readthedocs.io/working_with_conditional_formats.html
+        worksheet.conditional_format(0, 0, 0, len(df_final.dataframe.columns), {'type' : 'no_blanks', 'format': first_row_fmt})
+        worksheet.conditional_format(0, 1, len(df_final.dataframe), len(df_final.dataframe.columns), {'type' : 'no_blanks', 'format': border_fmt})
+        
+    writer.save()
+
+def MMPnL(AsiaDayCount, LondonDayCount, Ref_Date, input_folder, output_folder):
+    print("Asia Day Count: {}, London Day Count: {}, Ref date: {}".format(AsiaDayCount, LondonDayCount, Ref_Date))
+    time_start = time.time()
+    os.chdir(input_folder)
+    DailyRates_df_cash = pd.read_excel('Daily OIS Rates.xlsx', 'OIS') #get the daily OIS rates
+    DailyRates_df_bonds = pd.read_excel('Daily OIS Rates.xlsx', 'RFR') #get the daily OIS rates
+
+    Booklists_df = pd.read_excel('Booklist.xlsx', usecols = ['Book', 'ChorusID', 'AsiaLondonCount'], dtype=str)  #get the book list, data type= str, otherwise miss books with number names
+    Booklists_df.rename(columns={"Book": "BookName"}, inplace=True) #To have a vlookup between two dataframe actually having a column in commun
+    list_df_final = []
+    
+    for Tradelist in ['Live Trade List_lmp.csv', 'Live Trade List_funding.csv', 'Live Trade List_bond.csv']:
+        if Tradelist in ['Live Trade List_lmp.csv', 'Live Trade List_funding.csv']: #to calculate accrued pnl -- only for non-bond trade
+            '''Step 1: sort out raw data from trade list''' 
+            '''Step 1-0: Get raw data from trade list'''    
+            Tradelist_df = pd.read_csv(Tradelist, usecols = ['Currency','BookName','TradeType','AccountingProductType','StartDate','EndDate','MarketConvention','CurrentNotional','CurrentFixing','CurrentSpread'])
+            Tradelist_df = Tradelist_df[(Tradelist_df['BookName'].isin(Booklists_df['BookName']) & Tradelist_df['Currency'].isin(DailyRates_df_cash['Currency']))] #subset of what is in scope
+            
+       
+            '''Step 1-1: Exclude bond and fx  & CCS swap and repo trade from Live Trade List_lmp.csv'''
+            if Tradelist == 'Live Trade List_lmp.csv':
+                Tradelist_df=Tradelist_df[(~Tradelist_df['TradeType'].isin(['Bond'])) & (~Tradelist_df['AccountingProductType'].isin(['FXSWAP', 'CCYSWAP']))]
+          
+            '''Step 1-2: Exclude fwd starting deal or matured deal'''
+            Tradelist_df['StartDate']= pd.to_datetime(Tradelist_df['StartDate']).dt.date #Transforms the column from string to time object
+            Tradelist_df['EndDate']= pd.to_datetime(Tradelist_df['EndDate']).dt.date #same as above
+            Tradelist_df = Tradelist_df[(Tradelist_df['StartDate'] <= datetime.strptime(Ref_Date, '%d/%m/%Y').date()) & (Tradelist_df['EndDate'] > datetime.strptime(Ref_Date, '%d/%m/%Y').date())]
+                        
+            '''Step 1-3: Sort out DayCount, Notional, All-in Rate'''
+            Tradelist_df['CurrentSpread'] = Tradelist_df['CurrentSpread'].fillna(0)   
+            Tradelist_df['All_In_Rate'] = Tradelist_df['CurrentFixing'] + (100*Tradelist_df['CurrentSpread'])
+            
+            Tradelist_df['DayCount'] = Tradelist_df['MarketConvention'].str.split('/', expand=True)[1] #creates 1 new column based on Market Convention data
+            Tradelist_df['DayCount'] = list(map(int,Tradelist_df['DayCount'].str[:3])) #removes any ending "F" and convert to int
+            
+            if Tradelist =='Live Trade List_funding.csv': #in this file some CurrentNotional are stored in string
+                Tradelist_df['CurrentNotional'] = Tradelist_df['CurrentNotional'].str.replace(',','')
+            Tradelist_df['CurrentNotional'] = Tradelist_df['CurrentNotional'].astype(float)
+            
+            '''Step2: Calculate accrual pnl according to Asia/ldn count and group by bookname'''    
+            Tradelist_df = pd.merge(Tradelist_df, DailyRates_df_cash[["Currency", 'Rate_OIS']], on="Currency", how='left') #adds a column Rate, filled with the ones corresponding to each line
+            Tradelist_df = pd.merge(Tradelist_df, DailyRates_df_cash[["Currency", 'Spot']], on="Currency", how='left') #adds a column Spot, filled with the ones corresponding to each line
+            Tradelist_df['PnL'] = Tradelist_df['CurrentNotional']*(Tradelist_df['All_In_Rate']-Tradelist_df['Rate_OIS'])/Tradelist_df['DayCount']/-100/Tradelist_df['Spot']
+         
+        elif Tradelist == 'Live Trade List_bond.csv':
+            Tradelist_df = pd.read_csv(Tradelist, usecols = ['Currency', 'TradeId', 'BookName','CurrentRate','SettlementDate','MaturityDate','OutstandingNominal','PurchaseCleanPrice']) 
+            Tradelist_df = Tradelist_df[(Tradelist_df['BookName'].isin(['19287', '8918', 'AUDSSA', 'GLBBONDS22','17069', '20047_TCW', 'CNHBONDTCW', '25146']))] #subset of what is in scope
+            
+            Tradelist_df['SettlementDate']= pd.to_datetime(Tradelist_df['SettlementDate']).dt.date #Transforms the column from string to time object
+            Tradelist_df['MaturityDate']= pd.to_datetime(Tradelist_df['MaturityDate']).dt.date #same as above
+            Tradelist_df = Tradelist_df[(Tradelist_df['SettlementDate'] <= datetime.strptime(Ref_Date, '%d/%m/%Y').date()) & (Tradelist_df['MaturityDate'] > datetime.strptime(Ref_Date, '%d/%m/%Y').date())]
+            
+            Tradelist_df = pd.merge(Tradelist_df, DailyRates_df_bonds[["Currency", 'Rate_RFR']], on="Currency", how='left') 
+            Tradelist_df = pd.merge(Tradelist_df, DailyRates_df_bonds[["Currency", 'Spot']], on="Currency", how='left')
+        
+            Tradelist_df['Total_deal_life_in_days'] = list(map(lambda x,y: (x-y).days, Tradelist_df['MaturityDate'], Tradelist_df['SettlementDate'])) #applys the lambda function to Maturity date and Settlement date
+            Tradelist_df['Reporting Int Accrual'] = Tradelist_df['OutstandingNominal'] * Tradelist_df['CurrentRate'] / (100*365*Tradelist_df['Spot'])
+            Tradelist_df['P2P PnL'] = ( (100 - Tradelist_df['PurchaseCleanPrice']) * Tradelist_df['OutstandingNominal'] ) / (Tradelist_df['Total_deal_life_in_days'] * 100 * Tradelist_df['Spot'])
+            Tradelist_df['Funding PnL'] = - Tradelist_df['OutstandingNominal'] * Tradelist_df['Rate_RFR'] / (100*365*Tradelist_df['Spot'])
+            Tradelist_df['PnL'] = Tradelist_df['Reporting Int Accrual'] + Tradelist_df['P2P PnL'] + Tradelist_df['Funding PnL']
+                    
+        '''Judging Asia/Ldn Count and mutiplies accordingly''' 
+        BookLevelPnL_df = pd.DataFrame(Tradelist_df.groupby(['BookName'])['PnL'].sum())
+        BookLevelPnL_df = pd.merge(BookLevelPnL_df, Booklists_df[["BookName", 'ChorusID']], on="BookName", how='left') #adds a ChorusID column
+        
+        BookLevelPnL_df = pd.merge(BookLevelPnL_df, Booklists_df[["BookName", 'AsiaLondonCount']], on="BookName", how='left') #adds a AsiaLondonCount column
+        BookLevelPnL_df['AsiaLondonCount'] = np.where(BookLevelPnL_df['AsiaLondonCount'] == 'AsiaCount', AsiaDayCount, LondonDayCount) #adds a column where input depends on AsiaLondonCount data: True / False
+        BookLevelPnL_df['PnL_AsiaLondonCount_adj'] = BookLevelPnL_df['PnL']*BookLevelPnL_df['AsiaLondonCount']       
+        BookLevelPnL_df.set_index('BookName', inplace = True) #sets the BookName column as index; removes the 0..1..2.. indexing
+        
+        BookLevelPnL_df = BookLevelPnL_df.drop_duplicates()
+        print(BookLevelPnL_df, '\n')
+  
+        list_df_final.append(df_final(Tradelist.split('.')[0], BookLevelPnL_df))  #creates an object; name of the file, without the csv extension
+
+    save_data_excel(list_df_final, Ref_Date, output_folder)
+    print('LMP & FUNDING & Bond PnL have been produced in only {:.1} seconds !'.format(float(time.time() - time_start)))
