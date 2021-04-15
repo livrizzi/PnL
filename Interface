@@ -1,0 +1,139 @@
+from tkinter import *
+from tkinter import filedialog, ttk, messagebox
+from tkcalendar import Calendar #Download module here: https://pypi.org/project/tkcalendar/#files
+from datetime import date
+from PnL_Accrual_Alison_Revised import MMPnL
+
+class counter_obj(Frame): #inherits from class Frame, it then can be packed directly
+    def __init__(self, name): #it is set by default in launcher; would be more clean to set a "master" parameter 
+        Frame.__init__(self) #initializes using parent class method
+        self.configure(background='white')
+        self.name = name
+        self.count = 1
+        Label(self, text="                                    ", bg = 'white').pack(side=RIGHT) #to align; put it in self directly...as it has Frame properties
+        ttk.Button(self, text="↑", command= lambda: counter_obj.increase(self), width=1).pack(side=RIGHT, padx=2)
+        
+        self.textbox = Label(self, text= self.name + " Day Count: " + str(self.count), width=16, bg = 'white')
+        self.textbox.pack(side=RIGHT, fill=BOTH,padx=2)
+        ttk.Button(self, text="↓", command= lambda: counter_obj.decrease(self), width=1).pack(side=RIGHT, padx=2)
+        
+    def increase(self):
+        self.count +=1
+        counter_obj.update_text(self)
+
+    def decrease(self):       
+        if self.count >=2:
+            self.count -=1
+            counter_obj.update_text(self)
+    
+    def update_text(self):         
+        self.textbox['text'] = self.name + " Day Count: " + str(self.count)
+
+
+class slice_obj:
+    def __init__(self, label_text, text_string):
+        self.area = Frame(launcher, width=400, height=800, borderwidth=1, bg = 'white')
+        Label(self.area, text= label_text, bg = 'white').pack(side=TOP) #displays "Data input" or "Data output"
+        
+        Label(self.area, text="   ", bg = 'white').pack(side=LEFT) #to align
+        
+        self.data_input = Entry(self.area, textvariable= StringVar(), width =46)
+        self.data_input.insert(0, text_string) 
+        self.data_input.pack(side=LEFT)
+        
+        ttk.Button(self.area, text="Pick a folder", command= lambda: slice_obj.pick_folder(self)).pack(side=LEFT, padx=10)
+        
+    def pick_folder(self):
+        global launcher
+        launcher.withdraw()
+        initial_folder = self.data_input.get()
+        folder_selected = filedialog.askdirectory()
+        
+        if folder_selected == "": #in case we click the button but end up not picking any folder; we resume to the one previously input
+            folder_selected = initial_folder
+
+        launcher.deiconify()
+        self.data_input.delete(0, END) #empty the cell
+        self.data_input.insert(0, folder_selected) #add the new folder
+
+
+def contact(window):
+    messagebox.showinfo("Reach out !","For any question / improvement, please contact Alison Lin or Antoine Livrizzi")
+    
+def About():
+    messagebox.showinfo("About this tool","This is a draft tool that aims at computing TFI daily PnL; please reach out for improvement")
+
+"Launch the interface"
+def lauch_main_menu():
+    global Asia_counter, London_counter, ref_date, launcher
+    
+    launcher = Tk() #creates the variable that will be used in the whole module
+    launcher.configure(background='white')
+    launcher.resizable(width=0, height=0) #prevents from resizing
+    launcher.title("Daily PnL Computation")
+   
+    main_menu = Menu(launcher)
+    launcher.config(menu=main_menu) #on paramettre ce main menu comme menu de notre tkinter
+    
+    # 1st main menu item: an empty (as far) submenu
+    sub_menu_file = Menu(main_menu, tearoff=0) #on cree un sous menu dans cette barre de menu. On retire le tearoff (des dash inutiles)
+    main_menu.add_cascade(label="File", menu=sub_menu_file, underline=0) #ce sous menu est ENCORE un menu, nomme file, qui s attache au sous menu. Alt + F va le lancer
+    sub_menu_file.add_command(label="About", underline=0, command=About)
+
+    sub_menu_file.add_separator() #ajoute une ligne de separation
+    
+    sub_menu_file.add_command(label="Quit", underline=0, command= lambda: launcher.destroy()) # add the QUIT action to the submenu
+    main_menu.add_command(label="Contact", command=lambda: contact(launcher), underline=0)
+
+    Frame(launcher, width=300, height=30, borderwidth=1, bg = 'white').pack(fill=BOTH, side = TOP) #spacing slice
+
+    Asia_counter = counter_obj("Asia")  #creates the object but does place it yet
+    London_counter = counter_obj("London")
+    
+    for counter in [Asia_counter, London_counter]:
+        counter.pack(fill=BOTH, side = TOP)
+        Frame(launcher, width=100, height=10, borderwidth=1, bg = 'white').pack(fill=BOTH, side = TOP) #spacing slice
+
+    def display_calendar():
+        def print_sel():
+            global ref_date
+            ref_date = cal.selection_get() #captures the selected date...in a date format YYYY-MM-DD
+            ref_date = ref_date.strftime("%d/%m/%Y") #changes the date format
+            Button_calendar_text.set('Reference Date:  ' + ref_date)
+            top.destroy()
+            
+        top = Toplevel(launcher)
+        top.title("Pick the reference date !")
+        cal = Calendar(top,
+                       font="Arial 14", selectmode='day',
+                       cursor="hand1", year=date.today().year, month=date.today().month, day=date.today().day)
+        cal.pack(fill="both", expand=True)
+        ttk.Button(top, text="Go !", command=print_sel).pack()  
+    
+    Button_calendar_text = StringVar()
+    Button_calendar = ttk.Button(launcher, textvariable = Button_calendar_text, command=display_calendar)
+    today = date.today()
+    ref_date = today.strftime("%d/%m/%Y")
+    Button_calendar_text.set(' Reference Date:  '+ ref_date)
+    Button_calendar.pack(padx=10, pady=10)
+     
+    
+    input_entry_button = slice_obj("Data input:", r"C:\Users\livrizza\.spyder-py3\FSTI Flash_Python")
+    input_entry_button.area.pack(fill=BOTH, side = TOP)
+    
+    output_entry_button = slice_obj("Data output:", r"C:\Users\livrizza\.spyder-py3\FSTI Flash_Python") #r is needed to input folder address
+    output_entry_button.area.pack(fill=BOTH, side = TOP)
+    
+    
+    Frame(launcher, width=300, height=30, borderwidth=1, bg = 'white').pack(fill=BOTH, side = TOP) #spacing slice
+    ttk.Button(launcher,text='Compute PnL !', command= lambda: MMPnL(Asia_counter.count, London_counter.count, ref_date, input_entry_button.data_input.get(), output_entry_button.data_input.get())).pack(side=TOP)
+
+    bottom_slice = Frame(launcher, width=300, borderwidth=1, bg = 'white')
+    bottom_slice.pack(fill=BOTH, side = BOTTOM)
+    Label(bottom_slice, text="TFI Asia Tool", bg = 'white').pack(side=RIGHT)
+    
+    Frame(launcher, width=300, height=20, borderwidth=1, bg = 'white').pack(fill=BOTH)
+    
+    launcher.mainloop()
+    
+lauch_main_menu()
